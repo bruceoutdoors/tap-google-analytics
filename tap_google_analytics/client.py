@@ -173,7 +173,7 @@ class GoogleAnalyticsStream(Stream):
                 raise TapGaUnknownError(e._get_reason())
 
     def _get_state_filter(self, context: Optional[dict]) -> str:
-        start = self.get_starting_timestamp()
+        start = self.get_starting_timestamp(context)
 
         # state bookmarks need to be reformatted for API requests
         return datetime.strftime(start, "%Y-%m-%d")
