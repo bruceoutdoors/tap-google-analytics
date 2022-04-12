@@ -206,13 +206,14 @@ class GoogleAnalyticsStream(Stream):
 
         state_filter = self._get_state_filter(context)
         api_report_def = self._generate_report_definition(self.report)
+        end_date = datetime.strptime(self.end_date, "%Y-%m-%d")
         while not finished:
             resp = self._request_data(
                 api_report_def,
                 state_filter=state_filter,
                 next_page_token=next_page_token,
             )
-            for row in self._parse_response(resp):
+            for row in self._parse_response(resp, state_filter):
                 yield row
             previous_token = copy.deepcopy(next_page_token)
             next_page_token = self._get_next_page_token(response=resp)
@@ -221,8 +222,18 @@ class GoogleAnalyticsStream(Stream):
                     f"Loop detected in pagination. "
                     f"Pagination token {next_page_token} is identical to prior token."
                 )
+            
             # Cycle until get_next_page_token() no longer returns a value
-            finished = not next_page_token
+            if not next_page_token:
+                state_date = datetime.strptime(state_filter, "%Y-%m-%d")
+                next_state_date = state_date + timedelta(days=1)
+                if next_state_date > end_date:
+                    finished = True
+                else:
+                    state_filter = next_state_date.strftime("%Y-%m-%d")
+                    finished = False
+            else:
+                finished = False
 
     def _get_next_page_token(self, response: dict) -> Any:
         """Return token identifying next page or None if all records have been read.
@@ -243,7 +254,7 @@ class GoogleAnalyticsStream(Stream):
         if report:
             return report[0].get("nextPageToken")
 
-    def _parse_response(self, response):
+    def _parse_response(self, response, state_filter):
         report = response.get("reports", [])[0]
         if report:
             columnHeader = report.get("columnHeader", {})
@@ -288,7 +299,7 @@ class GoogleAnalyticsStream(Stream):
                         record[metric_name.replace("ga:", "ga_")] = value
 
                 # Also add the [start_date,end_date) used for the report
-                report_date = datetime.strptime(self.config.get("start_date"), "%Y-%m-%d").isoformat()
+                report_date = datetime.strptime(state_filter, "%Y-%m-%d").isoformat()
                 record["report_start_date"] = report_date
                 record["report_end_date"] = report_date
 
