@@ -173,10 +173,16 @@ class GoogleAnalyticsStream(Stream):
                 raise TapGaUnknownError(e._get_reason())
 
     def _get_state_filter(self, context: Optional[dict]) -> str:
-        start = self.get_starting_timestamp(context)
+        state = self.get_context_state(context)
+        state_bookmark = state.get("replication_key_value") or self.config["start_date"]
+        try:
+            parsed = datetime.strptime(state_bookmark, "%Y%m%d")
+        except ValueError:
+            # Take only the first 10 characters since date string can be ISO format
+            parsed = datetime.strptime(state_bookmark[:10], "%Y-%m-%d")
 
         # state bookmarks need to be reformatted for API requests
-        return datetime.strftime(start, "%Y-%m-%d")
+        return datetime.strftime(parsed, "%Y-%m-%d")
 
     def _request_records(self, context: Optional[dict]) -> Iterable[dict]:
         """Request records from REST endpoint(s), returning response records.
