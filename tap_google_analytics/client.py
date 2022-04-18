@@ -181,6 +181,11 @@ class GoogleAnalyticsStream(Stream):
             # Take only the first 10 characters since date string can be ISO format
             parsed = datetime.strptime(state_bookmark[:10], "%Y-%m-%d")
 
+        if 'replication_key_value' in state:
+            # When reading from state, there should be a 1-day offset
+            # so we don't reimport the last day again
+            parsed += timedelta(days=1)
+
         # state bookmarks need to be reformatted for API requests
         return datetime.strftime(parsed, "%Y-%m-%d")
 
