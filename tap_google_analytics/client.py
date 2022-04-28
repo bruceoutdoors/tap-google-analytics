@@ -211,8 +211,13 @@ class GoogleAnalyticsStream(Stream):
         finished = False
 
         state_filter = self._get_state_filter(context)
+        state_date = datetime.strptime(state_filter, "%Y-%m-%d")
         api_report_def = self._generate_report_definition(self.report)
         end_date = datetime.strptime(self.end_date, "%Y-%m-%d")
+
+        # End date will have an offset of a day behind, so we prematurely finish when we reached it
+        finished = state_date >= end_date
+
         while not finished:
             resp = self._request_data(
                 api_report_def,
