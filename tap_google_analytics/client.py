@@ -25,6 +25,7 @@ from tap_google_analytics.error import (
 
 class GoogleAnalyticsStream(Stream):
     """Stream class for GoogleAnalytics streams."""
+    replication_key = 'report_start_date'
 
     def __init__(self, *args, **kwargs) -> None:
         """Init GoogleAnalyticsStream."""
@@ -179,6 +180,12 @@ class GoogleAnalyticsStream(Stream):
         except ValueError:
             # Take only the first 10 characters since date string can be ISO format
             parsed = datetime.strptime(state_bookmark[:10], "%Y-%m-%d")
+
+        if 'replication_key_value' in state:
+            # When reading from state, there should be a 1-day offset
+            # so we don't reimport the last day again
+            parsed += timedelta(days=1)
+
         # state bookmarks need to be reformatted for API requests
         return datetime.strftime(parsed, "%Y-%m-%d")
 
@@ -204,14 +211,20 @@ class GoogleAnalyticsStream(Stream):
         finished = False
 
         state_filter = self._get_state_filter(context)
+        state_date = datetime.strptime(state_filter, "%Y-%m-%d")
         api_report_def = self._generate_report_definition(self.report)
+        end_date = datetime.strptime(self.end_date, "%Y-%m-%d")
+
+        # End date will have an offset of a day behind, so we prematurely finish when we reached it
+        finished = state_date > end_date
+
         while not finished:
             resp = self._request_data(
                 api_report_def,
                 state_filter=state_filter,
                 next_page_token=next_page_token,
             )
-            for row in self._parse_response(resp):
+            for row in self._parse_response(resp, state_filter):
                 yield row
             previous_token = copy.deepcopy(next_page_token)
             next_page_token = self._get_next_page_token(response=resp)
@@ -220,8 +233,18 @@ class GoogleAnalyticsStream(Stream):
                     f"Loop detected in pagination. "
                     f"Pagination token {next_page_token} is identical to prior token."
                 )
+            
             # Cycle until get_next_page_token() no longer returns a value
-            finished = not next_page_token
+            if not next_page_token:
+                state_date = datetime.strptime(state_filter, "%Y-%m-%d")
+                next_state_date = state_date + timedelta(days=1)
+                if next_state_date > end_date:
+                    finished = True
+                else:
+                    state_filter = next_state_date.strftime("%Y-%m-%d")
+                    finished = False
+            else:
+                finished = False
 
     def _get_next_page_token(self, response: dict) -> Any:
         """Return token identifying next page or None if all records have been read.
@@ -242,7 +265,7 @@ class GoogleAnalyticsStream(Stream):
         if report:
             return report[0].get("nextPageToken")
 
-    def _parse_response(self, response):
+    def _parse_response(self, response, state_filter):
         report = response.get("reports", [])[0]
         if report:
             columnHeader = report.get("columnHeader", {})
@@ -287,8 +310,9 @@ class GoogleAnalyticsStream(Stream):
                         record[metric_name.replace("ga:", "ga_")] = value
 
                 # Also add the [start_date,end_date) used for the report
-                record["report_start_date"] = self.config.get("start_date")
-                record["report_end_date"] = self.end_date
+                report_date = datetime.strptime(state_filter, "%Y-%m-%d").isoformat()
+                record["report_start_date"] = report_date
+                record["report_end_date"] = report_date
 
                 yield record
 
@@ -308,7 +332,7 @@ class GoogleAnalyticsStream(Stream):
                 {
                     "viewId": self.view_id,
                     "dateRanges": [
-                        {"startDate": state_filter, "endDate": self.end_date}
+                        {"startDate": state_filter, "endDate": state_filter}
                     ],
                     "pageSize": "1000",
                     "pageToken": pageToken,
@@ -374,8 +398,6 @@ class GoogleAnalyticsStream(Stream):
             )
 
             if dimension == "ga:date":
-                date_dimension_included = True
-                self.replication_key = "ga_date"
                 data_type = "datetime"    
 
             dimension = dimension.replace("ga:", "ga_")
@@ -394,21 +416,14 @@ class GoogleAnalyticsStream(Stream):
 
         # Also add the {start_date, end_date} params for the report query
         properties.append(
-            th.Property("report_start_date", th.StringType(), required=True)
+            th.Property("report_start_date", th.DateTimeType(), required=True)
         )
         properties.append(
-            th.Property("report_end_date", th.StringType(), required=True)
+            th.Property("report_end_date", th.DateTimeType(), required=True)
         )
 
-        # If 'ga:date' has not been added as a Dimension, add the
-        #  {start_date, end_date} params as keys
-        if not date_dimension_included:
-            self.logger.warn(
-                f"Incrmental sync not supported for stream {self.tap_stream_id}, \
-                    'ga.date' is the only supported replication key at this time."
-            )
-            primary_keys.append("report_start_date")
-            primary_keys.append("report_end_date")
+        primary_keys.append("report_start_date")
+        primary_keys.append("report_end_date")
 
         self.primary_keys = primary_keys
         return th.PropertiesList(*properties).to_dict()
